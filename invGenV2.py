@@ -6,6 +6,8 @@ import time
 from multiprocessing import Process
 import glob
 import re
+import urllib.parse
+
 heads = []
 with open('header.csv') as f:
   for line in f:
@@ -31,17 +33,17 @@ def map1():
     already = 0
   else:
     already = int( re.search(r"(\d{1,})", maxnames[-1]).group(1) )
-  with open('../../sdb/138717728.json.tmp', 'r') as f:
+  with open('../../sdb/138717728.json', 'r') as f:
     ancker = time.time()
     tuuid_dts = {}
     for ind, line in enumerate(f):
       line = line.strip()
       line = line.replace('[[', '[')
-      if ind < already:
-        continue
-      if ind%1000 == 0:
+      if ind%10000 == 0:
         print('now iter {ind} {time}'.format(ind=ind, time="%04f"%(time.time() - ancker)))
         ancker = time.time()
+      if ind < already:
+        continue
       if ind%200000 == 0:
         print('save iter {ind} {time}'.format(ind=ind, time="%04f"%(time.time() - ancker)))
         ancker = time.time()
@@ -51,13 +53,19 @@ def map1():
 
       if line[-1] == ',':
         raw = line[:-1]
-        o = json.loads(raw)
+        try:
+          o = json.loads(raw)
+        except json.decoder.JSONDecodeError as e:
+          continue
         z = dict(zip(heads, o))
         tuuid = z['tuuid']
         dt    = z['date_time']
         if tuuid is None: 
           continue
-
+        ru = urllib.parse.unquote(urllib.parse.unquote(z['request_uri']))
+        ru = {xs[0]:xs[1] for xs in filter( lambda xs: len(xs) == 2, \
+                  map(lambda x:x.split('='), ru.split('&')) ) }
+        z['request_uri'] = ru
         if tuuid_dts.get(tuuid) is None: tuuid_dts[tuuid] = DT()
         tuuid_dts[tuuid].ts.add(dt)
         tuuid_dts[tuuid].data.append(z)
@@ -69,12 +77,19 @@ def makeRed1(tuuid_dts, num):
   return None
 
 def red1():
-  import plyvel
+  try:
+    m = int ( sorted(map(lambda x:re.search(r"/(\d{1,}).pkl",x).group(1), \
+                  glob.glob("red1/*.pkl")), key=lambda x:x)[-1] )
+  except IndexError as e:
+    m = 0
+    print("reduce step1は今回の実行が初めてですね")
   tuuid_dts = {}
   ancker = time.time()
   for name in sorted(glob.glob("maps/*.pkl")):
-    num = int(re.search(r"(\d{1,})", name).group(1))
-    if num%10000000 == 0:
+    num = int(re.search(r"(\d{1,}).pkl", name).group(1))
+    if int(num) < m:
+      continue
+    if num%2000000 == 0:
       print("dump task...", num)
       p = Process(target=makeRed1, args=(tuuid_dts,num, ))
       p.start()
@@ -83,7 +98,11 @@ def red1():
     print(time.time() - ancker)
     print("try to collect {name}".format(name=name))
     ancker = time.time()
-    t_ds = pickle.loads(open(name, 'rb').read())
+    try:
+      t_ds = pickle.loads(open(name, 'rb').read())
+    except Exception as e:
+      print('cannot parse pickle...', e)
+      continue
     for t, ds in t_ds.items():
       if tuuid_dts.get(t) is None : tuuid_dts[t] = DT()
       
